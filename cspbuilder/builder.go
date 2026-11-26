@@ -73,6 +73,10 @@ func (builder *Builder) Build() (string, error) {
 	sort.Strings(directiveKeys)
 
 	for _, directive := range directiveKeys {
+		if err := validateDirectiveName(directive); err != nil {
+			return "", err
+		}
+
 		if sb.Len() > 0 {
 			sb.WriteString("; ")
 		}

@@ -54,6 +54,10 @@ func buildDirectiveFrameAncestors(sb *strings.Builder, values []string) error {
 	sb.WriteString(FrameAncestors)
 
 	for _, val := range values {
+		if err := validateSourceValue(FrameAncestors, val); err != nil {
+			return err
+		}
+
 		if strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'") {
 			switch val {
 			case "'self'":
@@ -81,6 +85,9 @@ func buildDirectiveReportTo(sb *strings.Builder, values []string) error {
 
 	sb.WriteString(ReportTo)
 	sb.WriteString(" ")
+	if err := validateSourceValue(ReportTo, values[0]); err != nil {
+		return err
+	}
 	sb.WriteString(values[0])
 
 	return nil
@@ -141,6 +148,12 @@ func buildDirectiveUpgradeInsecureRequests(sb *strings.Builder, values []string)
 func buildDirectiveDefault(sb *strings.Builder, directive string, values []string) error {
 	if len(values) == 0 {
 		return fmt.Errorf("no values set for directive %s", directive)
+	}
+
+	for _, value := range values {
+		if err := validateSourceValue(directive, value); err != nil {
+			return err
+		}
 	}
 
 	sb.WriteString(directive)

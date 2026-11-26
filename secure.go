@@ -82,14 +82,14 @@ type Options struct {
 	CustomBrowserXssValue string //nolint:stylecheck,revive
 	// Passing a template string will replace `$NONCE` with a dynamic nonce value of 16 bytes for each request which can be later retrieved using the Nonce function.
 	// Eg: script-src $NONCE -> script-src 'nonce-a2ZobGFoZg=='
-	// CustomFrameOptionsValue allows the X-Frame-Options header value to be set with a custom value. This overrides the FrameDeny option. Default is "".
+	// CustomFrameOptionsValue allows the X-Frame-Options header value to be set with a custom value. This overrides the FrameDeny option. DENY, SAMEORIGIN, and legacy ALLOW-FROM values are validated when the middleware is constructed. Default is "".
 	CustomFrameOptionsValue string
 	// ReferrerPolicy allows sites to control when browsers will pass the Referer header to other sites. Default is "".
 	ReferrerPolicy string
 	// FeaturePolicy allows to selectively enable and disable use of various browser features and APIs. Default is "".
 	// Deprecated: This header has been renamed to Permissions-Policy.
 	FeaturePolicy string
-	// PermissionsPolicy allows to selectively enable and disable use of various browser features and APIs. Default is "".
+	// PermissionsPolicy allows to selectively enable and disable use of various browser features and APIs. Values must use the modern comma-separated syntax; use permissionspolicybuilder to construct them safely. Invalid values are reported when New is called. Default is "".
 	PermissionsPolicy string
 	// CrossOriginOpenerPolicy allows you to ensure a top-level document does not share a browsing context group with cross-origin documents. Default is "".
 	// Reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cross-Origin-Opener-Policy
@@ -175,6 +175,13 @@ func New(options ...Options) *Secure {
 
 			s.cRegexAllowedHosts = append(s.cRegexAllowedHosts, regex)
 		}
+	}
+
+	// Validate handwritten security-header configuration during startup so a
+	// malformed policy panics where the middleware is constructed rather than
+	// silently producing a broader policy on the first request.
+	if err := validateOptions(o); err != nil {
+		panic(err.Error())
 	}
 
 	s.ctxSecureHeaderKey = ctxDefaultSecureHeaderKey
@@ -265,7 +272,7 @@ func (s *Secure) HandlerFuncWithNextForRequestOnly(w http.ResponseWriter, r *htt
 func addResponseHeaders(responseHeader http.Header, w http.ResponseWriter) {
 	for key, values := range responseHeader {
 		for _, value := range values {
-			w.Header().Set(key, value)
+			mustSetSecurityHeader(w.Header(), key, value)
 		}
 	}
 }
@@ -406,8 +413,8 @@ func (s *Secure) processRequest(w http.ResponseWriter, r *http.Request) (http.He
 		return nil, nil, fmt.Errorf("request not allowed")
 	}
 
-	// Create our header container.
-	responseHeader := make(http.Header)
+	// Create our validated header container.
+	responseHeader := newSecureHeaderSet()
 
 	// Strict Transport Security header. Only add header when we know it's an SSL connection.
 	// See https://tools.ietf.org/html/rfc6797#section-7.2 for details.
@@ -496,7 +503,11 @@ func (s *Secure) processRequest(w http.ResponseWriter, r *http.Request) (http.He
 		responseHeader.Set(permittedCrossDomainPolicies, s.opt.XPermittedCrossDomainPolicies)
 	}
 
-	return responseHeader, r, nil
+	if err := responseHeader.error(); err != nil {
+		return nil, nil, err
+	}
+
+	return responseHeader.Header, r, nil
 }
 
 // isSSL determine if we are on HTTPS.

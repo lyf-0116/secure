@@ -213,6 +213,37 @@ opt := secure.Options{
 }
 ~~~
 
+### Permissions Policy
+You can build a valid Permissions-Policy header with the structured builder:
+
+~~~ go
+import (
+	"github.com/unrolled/secure"
+	"github.com/unrolled/secure/permissionspolicybuilder"
+)
+
+permissionsBuilder := permissionspolicybuilder.Builder{
+	Directives: map[string][]string{
+		permissionspolicybuilder.Camera:      {},
+		permissionspolicybuilder.Geolocation: {"self"},
+		permissionspolicybuilder.Fullscreen:  {"self", "https://example.com"},
+	},
+}
+
+opt := secure.Options{
+	PermissionsPolicy: permissionsBuilder.MustBuild(),
+}
+~~~
+
+The builder emits the standard comma-separated syntax, quotes exact origins, and
+rejects malformed sources. The bare `*` allowlist remains valid but should only
+be used when a feature is intentionally available to every origin.
+
+`secure.New` validates handwritten CSP, Permissions-Policy, X-Frame-Options,
+and X-Content-Type-Options values at startup and panics on invalid
+configuration. Call `secure.Options{...}.Validate()` if you prefer to report
+the error before constructing the middleware.
+
 ## Integration examples
 
 ### [chi](https://github.com/pressly/chi)
