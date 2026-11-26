@@ -3,9 +3,13 @@ package secure
 import (
 	"context"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 type secureCtxKey string
@@ -112,6 +116,10 @@ type Options struct {
 	AllowedHosts []string
 	// AllowedHostsAreRegex determines, if the provided `AllowedHosts` slice contains valid regular expressions. If this flag is set to true, every request's host will be checked against these expressions. Default is false.
 	AllowedHostsAreRegex bool
+	// AllowedHostsWarnOnly allows requests with a host that does not match AllowedHosts while logging a throttled warning. Use it to observe stricter host matching before enabling enforcement. Default is false.
+	AllowedHostsWarnOnly bool
+	// AllowedHostsWarningInterval limits how often AllowedHostsWarnOnly warnings are written. Default is one minute.
+	AllowedHostsWarningInterval time.Duration
 	// AllowRequestFunc is a custom function that allows you to determine if the request should proceed or not based on your own custom logic. Default is nil.
 	AllowRequestFunc AllowRequestFunc `json:"-" toml:"-" yaml:"-"`
 	// HostsProxyHeaders is a set of header keys that may hold a proxied hostname value for the request.
@@ -144,6 +152,14 @@ type Secure struct {
 	// option for subsequent use in processRequest
 	cRegexAllowedHosts []*regexp.Regexp
 
+	// cAllowedHosts saves the normalized AllowedHosts values for exact matching.
+	cAllowedHosts []string
+
+	// hostWarningMu protects the AllowedHostsWarnOnly rate-limiting state.
+	hostWarningMu          sync.Mutex
+	lastHostWarning        time.Time
+	suppressedHostWarnings uint64
+
 	// ctxSecureHeaderKey is the key used for context storage for request modification.
 	ctxSecureHeaderKey secureCtxKey
 }
@@ -168,12 +184,16 @@ func New(options ...Options) *Secure {
 	if s.opt.AllowedHostsAreRegex {
 		// Test for invalid regular expressions in AllowedHosts
 		for _, allowedHost := range o.AllowedHosts {
-			regex, err := regexp.Compile(fmt.Sprintf("^%s$", allowedHost))
+			regex, err := compileAllowedHostRegex(allowedHost)
 			if err != nil {
 				panic(fmt.Sprintf("Error parsing AllowedHost: %s", err))
 			}
 
 			s.cRegexAllowedHosts = append(s.cRegexAllowedHosts, regex)
+		}
+	} else {
+		for _, allowedHost := range o.AllowedHosts {
+			s.cAllowedHosts = append(s.cAllowedHosts, normalizeHost(allowedHost))
 		}
 	}
 
@@ -183,6 +203,90 @@ func New(options ...Options) *Secure {
 	}
 
 	return s
+}
+
+func compileAllowedHostRegex(allowedHost string) (*regexp.Regexp, error) {
+	// A leading "*" was historically treated as a wildcard by the old
+	// "^*..." wrapper. It is not valid at the start of a regex, so preserve
+	// that intent before applying the anchors.
+	if strings.HasPrefix(allowedHost, "*") {
+		allowedHost = "." + allowedHost
+	}
+
+	return regexp.Compile(fmt.Sprintf(`(?i)\A(?:%s)\z`, allowedHost))
+}
+
+// NormalizeHost returns the canonical form used when comparing request hosts
+// against AllowedHosts.
+func NormalizeHost(host string) string {
+	return normalizeHost(host)
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimRight(host, ".")
+
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+
+	host = strings.TrimRight(host, ".")
+
+	return strings.ToLower(host)
+}
+
+func (s *Secure) isAllowedHost(host string) bool {
+	host = normalizeHost(host)
+
+	if s.opt.AllowedHostsAreRegex {
+		for _, allowedHost := range s.cRegexAllowedHosts {
+			if allowedHost.MatchString(host) {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	for _, allowedHost := range s.cAllowedHosts {
+		if allowedHost == host {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *Secure) warnBadHost(host string) {
+	interval := s.opt.AllowedHostsWarningInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+
+	now := time.Now()
+
+	s.hostWarningMu.Lock()
+	if !s.lastHostWarning.IsZero() && now.Sub(s.lastHostWarning) < interval {
+		s.suppressedHostWarnings++
+		s.hostWarningMu.Unlock()
+
+		return
+	}
+
+	suppressed := s.suppressedHostWarnings
+	s.suppressedHostWarnings = 0
+	s.lastHostWarning = now
+	s.hostWarningMu.Unlock()
+
+	if suppressed > 0 {
+		log.Printf("secure: host %q is not allowed (normalized %q); %d similar warning(s) suppressed", host, normalizeHost(host), suppressed)
+
+		return
+	}
+
+	log.Printf("secure: host %q is not allowed (normalized %q); allowing request because AllowedHostsWarnOnly is enabled", host, normalizeHost(host))
 }
 
 // SetBadHostHandler sets the handler to call when secure rejects the host name.
@@ -316,30 +420,14 @@ func (s *Secure) processRequest(w http.ResponseWriter, r *http.Request) (http.He
 
 	// Allowed hosts check.
 	if len(s.opt.AllowedHosts) > 0 && !s.opt.IsDevelopment {
-		isGoodHost := false
+		if !s.isAllowedHost(host) {
+			if !s.opt.AllowedHostsWarnOnly {
+				s.badHostHandler.ServeHTTP(w, r)
 
-		if s.opt.AllowedHostsAreRegex {
-			for _, allowedHost := range s.cRegexAllowedHosts {
-				if match := allowedHost.MatchString(host); match {
-					isGoodHost = true
-
-					break
-				}
+				return nil, nil, fmt.Errorf("bad host name: %s", host)
 			}
-		} else {
-			for _, allowedHost := range s.opt.AllowedHosts {
-				if strings.EqualFold(allowedHost, host) {
-					isGoodHost = true
 
-					break
-				}
-			}
-		}
-
-		if !isGoodHost {
-			s.badHostHandler.ServeHTTP(w, r)
-
-			return nil, nil, fmt.Errorf("bad host name: %s", host)
+			s.warnBadHost(host)
 		}
 	}
 

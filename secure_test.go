@@ -2,14 +2,17 @@ package secure
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -212,6 +215,131 @@ func TestBadMultipleAllowHosts(t *testing.T) {
 	s.Handler(myHandler).ServeHTTP(res, req)
 
 	expect(t, res.Code, http.StatusInternalServerError)
+}
+
+func TestAllowedHostsNormalizedAcrossModes(t *testing.T) {
+	tests := []struct {
+		name         string
+		allowedHosts []string
+		regex        bool
+		host         string
+	}{
+		{
+			name:         "exact host with mixed case port and trailing dot",
+			allowedHosts: []string{"www.example.com"},
+			host:         "WWW.EXAMPLE.COM.:8443",
+		},
+		{
+			name:         "regex host with mixed case port and trailing dot",
+			allowedHosts: []string{`.*\.example\.com`},
+			regex:        true,
+			host:         "WWW.EXAMPLE.COM.:8443",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New(Options{
+				AllowedHosts:         test.allowedHosts,
+				AllowedHostsAreRegex: test.regex,
+			})
+
+			res := httptest.NewRecorder()
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/foo", nil)
+			req.Host = test.host
+
+			s.Handler(myHandler).ServeHTTP(res, req)
+
+			expect(t, res.Code, http.StatusOK)
+			expect(t, res.Body.String(), `bar`)
+		})
+	}
+}
+
+func TestAllowedHostsProxyHeaderNormalization(t *testing.T) {
+	s := New(Options{
+		AllowedHosts:      []string{"WWW.EXAMPLE.COM"},
+		HostsProxyHeaders: []string{"X-Forwarded-Host"},
+	})
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/foo", nil)
+	req.Host = "example-internal"
+	req.Header.Set("X-Forwarded-Host", "www.example.com.:8443")
+
+	s.Handler(myHandler).ServeHTTP(res, req)
+
+	expect(t, res.Code, http.StatusOK)
+	expect(t, res.Body.String(), `bar`)
+}
+
+func TestAllowedHostsRegexAnchorsWholeHost(t *testing.T) {
+	tests := []struct {
+		name  string
+		regex string
+		host  string
+	}{
+		{
+			name:  "literal domain",
+			regex: `example\.com`,
+			host:  "example.com.attacker.example",
+		},
+		{
+			name:  "alternation",
+			regex: `example\.com|other\.example`,
+			host:  "example.com.attacker.example",
+		},
+		{
+			name:  "legacy leading wildcard",
+			regex: `*\.example\.com`,
+			host:  "www.example.com.attacker.example",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New(Options{
+				AllowedHosts:         []string{test.regex},
+				AllowedHostsAreRegex: true,
+			})
+
+			res := httptest.NewRecorder()
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/foo", nil)
+			req.Host = test.host
+
+			s.Handler(myHandler).ServeHTTP(res, req)
+
+			expect(t, res.Code, http.StatusInternalServerError)
+		})
+	}
+}
+
+func TestAllowedHostsWarnOnlyObservation(t *testing.T) {
+	var logs bytes.Buffer
+
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+
+	defer log.SetOutput(previousOutput)
+
+	s := New(Options{
+		AllowedHosts:                []string{"www.example.com"},
+		AllowedHostsWarnOnly:        true,
+		AllowedHostsWarningInterval: time.Minute,
+	})
+
+	for i := 0; i < 50; i++ {
+		res := httptest.NewRecorder()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/foo", nil)
+		req.Host = "www.example.com.attacker.example"
+
+		s.Handler(myHandler).ServeHTTP(res, req)
+
+		expect(t, res.Code, http.StatusOK)
+		expect(t, res.Body.String(), `bar`)
+	}
+
+	expect(t, strings.Count(logs.String(), "is not allowed"), 1)
 }
 
 func TestAllowHostsInDevMode(t *testing.T) {
