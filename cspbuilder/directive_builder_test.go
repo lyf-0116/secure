@@ -75,6 +75,11 @@ func TestBuildDirectiveFrameAncestors(t *testing.T) {
 			values:  []string{"'invalid-frame-ancestors-value'"},
 			wantErr: true,
 		},
+		{
+			name:    "directive injection",
+			values:  []string{"example.com; script-src *"},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,6 +123,11 @@ func TestBuildDirectiveReportTo(t *testing.T) {
 			values:  []string{"group1", "group2"},
 			wantErr: true,
 		},
+		{
+			name:    "directive injection",
+			values:  []string{"group1; script-src *"},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,6 +144,59 @@ func TestBuildDirectiveReportTo(t *testing.T) {
 
 			if got := sb.String(); got != tt.want {
 				t.Errorf("buildDirectiveReportTo() result = '%v', want '%v'", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildDirectiveReportURI(t *testing.T) {
+	tests := []struct {
+		name    string
+		values  []string
+		wantErr bool
+		want    string
+	}{
+		{
+			name:    "empty",
+			values:  nil,
+			wantErr: true,
+		},
+		{
+			name:   "absolute URL",
+			values: []string{"https://example.com/a%20b%2Fc%25"},
+			want:   "report-uri https://example.com/a%20b%2Fc%25",
+		},
+		{
+			name:   "multiple URLs",
+			values: []string{"https://example.com:8443/report", "/csp-report"},
+			want:   "report-uri https://example.com:8443/report /csp-report",
+		},
+		{
+			name:    "directive injection",
+			values:  []string{"https://example.com/report; script-src *"},
+			wantErr: true,
+		},
+		{
+			name:    "unsupported scheme",
+			values:  []string{"javascript:alert(1)"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sb := &strings.Builder{}
+
+			err := buildDirectiveReportURI(sb, tt.values)
+			if tt.wantErr && err != nil {
+				return
+			}
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("buildDirectiveReportURI() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if got := sb.String(); got != tt.want {
+				t.Errorf("buildDirectiveReportURI() result = '%v', want '%v'", got, tt.want)
 			}
 		})
 	}
@@ -303,6 +366,36 @@ func TestBuildDirectiveDefault(t *testing.T) {
 			directive: DefaultSrc,
 			values:    []string{"value1", "value2"},
 			want:      "default-src value1 value2",
+		},
+		{
+			name:      "wildcard and path",
+			directive: DefaultSrc,
+			values:    []string{"*", "https://*.example.com:8443/path/to/*", "data:"},
+			want:      "default-src * https://*.example.com:8443/path/to/* data:",
+		},
+		{
+			name:      "valid nonce",
+			directive: ScriptSrc,
+			values:    []string{"'nonce-jdgKGHkbnd+/'"},
+			want:      "script-src 'nonce-jdgKGHkbnd+/'",
+		},
+		{
+			name:      "invalid nonce",
+			directive: ScriptSrc,
+			values:    []string{"'nonce-abc!'"},
+			wantErr:   true,
+		},
+		{
+			name:      "directive injection",
+			directive: DefaultSrc,
+			values:    []string{"'self'; script-src *"},
+			wantErr:   true,
+		},
+		{
+			name:      "whitespace injection",
+			directive: DefaultSrc,
+			values:    []string{"'self' script-src *"},
+			wantErr:   true,
 		},
 	}
 	for _, tt := range tests {

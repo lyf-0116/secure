@@ -57,6 +57,42 @@ func TestContentSecurityPolicyBuilder_Build_SingleDirective(t *testing.T) {
 	}
 }
 
+func TestContentSecurityPolicyBuilder_Build_RejectsInjectedPolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		directives map[string][]string
+	}{
+		{
+			name: "value injection",
+			directives: map[string][]string{
+				DefaultSrc: {"'self'", "example.com; script-src *"},
+			},
+		},
+		{
+			name: "frame-ancestors injection",
+			directives: map[string][]string{
+				FrameAncestors: {"example.com; script-src *"},
+			},
+		},
+		{
+			name: "directive name injection",
+			directives: map[string][]string{
+				"default-src; script-src *": {"'self'"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := &Builder{Directives: tt.directives}
+
+			if got, err := builder.Build(); err == nil {
+				t.Errorf("ContentSecurityPolicyBuilder.Build() = %q, want error", got)
+			}
+		})
+	}
+}
+
 func TestContentSecurityPolicyBuilder_Build_MultipleDirectives(t *testing.T) {
 	tests := []struct {
 		name       string

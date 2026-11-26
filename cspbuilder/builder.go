@@ -73,6 +73,10 @@ func (builder *Builder) Build() (string, error) {
 	sort.Strings(directiveKeys)
 
 	for _, directive := range directiveKeys {
+		if err := validateDirectiveName(directive); err != nil {
+			return "", err
+		}
+
 		if sb.Len() > 0 {
 			sb.WriteString("; ")
 		}
@@ -90,6 +94,11 @@ func (builder *Builder) Build() (string, error) {
 			}
 		case ReportTo:
 			err := buildDirectiveReportTo(&sb, builder.Directives[directive])
+			if err != nil {
+				return "", err
+			}
+		case ReportURI:
+			err := buildDirectiveReportURI(&sb, builder.Directives[directive])
 			if err != nil {
 				return "", err
 			}
@@ -117,5 +126,10 @@ func (builder *Builder) Build() (string, error) {
 		}
 	}
 
-	return sb.String(), nil
+	policy := sb.String()
+	if err := validatePolicyStructure(policy, builder.Directives); err != nil {
+		return "", err
+	}
+
+	return policy, nil
 }

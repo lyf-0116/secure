@@ -63,6 +63,10 @@ func buildDirectiveFrameAncestors(sb *strings.Builder, values []string) error {
 			}
 		}
 
+		if err := validateSourceValue(FrameAncestors, val); err != nil {
+			return err
+		}
+
 		sb.WriteString(" ")
 		sb.WriteString(val)
 	}
@@ -79,9 +83,34 @@ func buildDirectiveReportTo(sb *strings.Builder, values []string) error {
 		return fmt.Errorf("too many values set for directive %s", ReportTo)
 	}
 
+	if err := validateReportToValue(values[0]); err != nil {
+		return err
+	}
+
 	sb.WriteString(ReportTo)
 	sb.WriteString(" ")
 	sb.WriteString(values[0])
+
+	return nil
+}
+
+func buildDirectiveReportURI(sb *strings.Builder, values []string) error {
+	if len(values) == 0 {
+		return fmt.Errorf("no values set for directive %s", ReportURI)
+	}
+
+	for _, val := range values {
+		if err := validateReportURIValue(val); err != nil {
+			return err
+		}
+	}
+
+	sb.WriteString(ReportURI)
+
+	for _, val := range values {
+		sb.WriteString(" ")
+		sb.WriteString(val)
+	}
 
 	return nil
 }
@@ -141,6 +170,12 @@ func buildDirectiveUpgradeInsecureRequests(sb *strings.Builder, values []string)
 func buildDirectiveDefault(sb *strings.Builder, directive string, values []string) error {
 	if len(values) == 0 {
 		return fmt.Errorf("no values set for directive %s", directive)
+	}
+
+	for _, val := range values {
+		if err := validateSourceValue(directive, val); err != nil {
+			return err
+		}
 	}
 
 	sb.WriteString(directive)
